@@ -76,6 +76,12 @@ local function handleMessages()
   messageBuffer = {}
 end
 
+--- Registers a function called once per highlight frame with the lit events.
+--- @param fn fun(active: table[])|nil
+function OSC.onFrame(fn)
+  handleMessageCallback = fn
+end
+
 function OSC.launch(highlightConf)
   local eventOsc = highlightConf.events.osc
   local styleOsc = highlightConf.styles.osc

@@ -5,6 +5,7 @@ local highlights = require("tidal.highlighting.highlights")
 local osc = require("tidal.highlighting.osc")
 local playstate = require("tidal.highlighting.playstate")
 local playstateOsc = require("tidal.highlighting.playstate.osc")
+local positions = require("tidal.highlighting.positions")
 
 function EventHighlights.start(highlight)
   local fpsToMs = 1000 / highlight.fps
@@ -27,10 +28,18 @@ function EventHighlights.start(highlight)
     osc.launch(highlight)
     osc.setInterval(fpsToMs)
   end
+
+  if highlight.positions then
+    positions.launch(highlight.positions)
+    osc.onFrame(positions.publish)
+    require("tidal.highlighting.playstate.process").handleMessageCallback = positions.publish
+    require("tidal.highlighting.playstate.socket").handleMessageCallback = positions.publish
+  end
 end
 
 function EventHighlights.stop()
   osc:clearInterval()
+  positions.stop()
 end
 
 return EventHighlights

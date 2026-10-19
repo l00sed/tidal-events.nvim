@@ -46,6 +46,10 @@ local defaults = {
           },
         },
         fps = 60,
+        --- Publish on-screen rectangles of `dN` pattern blocks as `/tidal/blocks` OSC
+        --- messages (see tidal/highlighting/positions.lua). Disabled when nil.
+        --- @type { ip: string, port: integer } | nil
+        positions = nil,
         onSamChange = function() end,
         onPlayStateChange = function() end,
         onParsedOutputChange = function() end,
