@@ -16,20 +16,37 @@ local losc = require("losc.src.losc")
 local pluginLibUv = require("losc.src.losc.plugins.udp-libuv")
 
 local osc = nil
+local augroup = vim.api.nvim_create_augroup("TidalPositions", { clear = true })
+local cache = {} -- buf -> { tick = changedtick, blocks = ... }
 
 --- @param conf { ip: string, port: integer }
 function Positions.launch(conf)
   osc = losc.new({ plugin = pluginLibUv.new({ sendAddr = conf.ip, sendPort = conf.port }) })
+  -- The highlight timer alone (its fps) lets visualizers trail fast scrolling,
+  -- so also publish as soon as the view or layout changes.
+  vim.api.nvim_create_autocmd({ "WinScrolled", "WinResized", "VimResized", "BufWinEnter", "TextChanged", "TextChangedI" }, {
+    group = augroup,
+    callback = function()
+      Positions.publish()
+    end,
+  })
 end
 
 function Positions.stop()
   osc = nil
+  vim.api.nvim_clear_autocmds({ group = augroup })
 end
 
---- Pattern blocks of a buffer as { id, first, last } (1-based, inclusive).
+--- Pattern blocks of a buffer as { id, first, last } (1-based, inclusive),
+--- re-parsed only when the buffer changes.
 --- @param buf integer
 --- @return { [1]: integer, [2]: integer, [3]: integer }[]
 local function patternBlocks(buf)
+  local tick = vim.api.nvim_buf_get_changedtick(buf)
+  local hit = cache[buf]
+  if hit and hit.tick == tick then
+    return hit.blocks
+  end
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local blocks, current = {}, nil
   for lnum, line in ipairs(lines) do
@@ -49,6 +66,7 @@ local function patternBlocks(buf)
   if current then
     table.insert(blocks, current)
   end
+  cache[buf] = { tick = tick, blocks = blocks }
   return blocks
 end
 
