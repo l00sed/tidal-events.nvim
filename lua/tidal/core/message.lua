@@ -11,6 +11,7 @@ function M.tidal.send(text)
   if not state.ghci then
     return
   end
+  require("tidal.highlighting.positions").sentText(vim.split(text, "\n"))
   state.ghci:send(text)
 end
 
@@ -21,6 +22,7 @@ function M.tidal.send_line(text, start)
     return
   end
 
+  require("tidal.highlighting.positions").sentText({ text })
   state.ghci:send_line(text, start)
 end
 
@@ -30,6 +32,7 @@ function M.tidal.send_multiline(lines, start)
   if not state.ghci then
     return
   end
+  require("tidal.highlighting.positions").sentText(lines)
   state.ghci:send_multiline(lines, start)
 end
 

@@ -240,8 +240,11 @@ resize, zoom, buffer switches and edits:
 | top, bottom | int, int | screen rows (0-based, inclusive) |
 | left, width | int, int | text area columns (0-based) |
 
-Only windows with `filetype=tidal` are reported; folds and scrolled-off lines
-are excluded.
+Only the block each pattern was **last sent from** is reported. Other `dN`
+definitions of the same pattern, in the same or other buffers, are ignored, so
+sending a different `d2` moves the visual to it. The sent block is tracked
+through edits; `dN silence` and `hush` remove patterns. Folds and scrolled-off
+lines are excluded.
 
 ### Terminal relay
 

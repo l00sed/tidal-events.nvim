@@ -60,6 +60,14 @@ local function ft_to_repl()
   return message.tidal
 end
 
+--- Highlights a sent range and records which pattern blocks it defined.
+---@param start { [1]: integer, [2]: integer } {line, col}, zero-indexed
+---@param finish { [1]: integer, [2]: integer } {line, col}, zero-indexed
+local function mark_sent(start, finish)
+  require("tidal.core.highlight").apply_highlight(start, finish)
+  require("tidal.highlighting.positions").sent(vim.api.nvim_get_current_buf(), start[1], finish[1])
+end
+
 --- Send text to the interpreter for the current filetype
 --- @param text string
 function M.send(text)
@@ -88,7 +96,7 @@ function M.send_line()
   local line = select.get_current_line()
   local text = line.lines[1]
   if #text > 0 then
-    require("tidal.core.highlight").apply_highlight(line.start, line.finish)
+    mark_sent(line.start, line.finish)
     local repl = ft_to_repl()
     if repl then
       marker.cleanUpMarkers(line.start[1] + 1, line.start[1] + 1)
@@ -102,7 +110,7 @@ end
 function M.send_visual()
   local visual = select.get_visual()
   if visual then
-    require("tidal.core.highlight").apply_highlight(visual.start, visual.finish)
+    mark_sent(visual.start, visual.finish)
     local repl = ft_to_repl()
     if repl then
       repl.send_multiline(visual.lines, visual.start)
@@ -116,7 +124,7 @@ function M.send_block()
     return
   end
   local block = select.get_block()
-  require("tidal.core.highlight").apply_highlight(block.start, block.finish)
+  mark_sent(block.start, block.finish)
   local repl = ft_to_repl()
   if repl then
     repl.send_multiline(block.lines, block.start)
@@ -127,7 +135,7 @@ end
 function M.send_node()
   local block = select.get_node()
   if block then
-    require("tidal.core.highlight").apply_highlight(block.start, block.finish)
+    mark_sent(block.start, block.finish)
     local repl = ft_to_repl()
     if repl then
       repl.send_multiline(block.lines)
