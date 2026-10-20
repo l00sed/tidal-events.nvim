@@ -6,6 +6,7 @@ local osc = require("tidal.highlighting.osc")
 local playstate = require("tidal.highlighting.playstate")
 local playstateOsc = require("tidal.highlighting.playstate.osc")
 local positions = require("tidal.highlighting.positions")
+local relay = require("tidal.highlighting.relay")
 
 function EventHighlights.start(highlight)
   local fpsToMs = 1000 / highlight.fps
@@ -35,11 +36,16 @@ function EventHighlights.start(highlight)
     require("tidal.highlighting.playstate.process").handleMessageCallback = positions.publish
     require("tidal.highlighting.playstate.socket").handleMessageCallback = positions.publish
   end
+
+  if highlight.relay then
+    relay.launch(highlight.relay)
+  end
 end
 
 function EventHighlights.stop()
   osc:clearInterval()
   positions.stop()
+  relay.stop()
 end
 
 return EventHighlights

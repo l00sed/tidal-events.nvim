@@ -50,6 +50,10 @@ local defaults = {
         --- messages (see tidal/highlighting/positions.lua). Disabled when nil.
         --- @type { ip: string, port: integer } | nil
         positions = nil,
+        --- Relay raw terminal output received over UDP to the host terminal via
+        --- nvim_ui_send() (see tidal/highlighting/relay.lua). Disabled when nil.
+        --- @type { ip: string, port: integer } | nil
+        relay = nil,
         onSamChange = function() end,
         onPlayStateChange = function() end,
         onParsedOutputChange = function() end,

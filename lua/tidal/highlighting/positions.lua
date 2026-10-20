@@ -6,7 +6,8 @@
 --- the next blank line or the next `dN` line.
 ---
 --- Message `/tidal/blocks`, sent every highlight frame:
----   s  tmux pane id ($TMUX_PANE, "" outside tmux)
+---   s  tmux pane id ($TMUX_PANE), or outside tmux the host terminal device
+---      (e.g. /dev/ttys003) so its pixel size can be read; "" if unknown
 ---   i  editor lines, i editor columns
 ---   then per visible block: i pattern id (d1 -> 1), i top screen row, i bottom
 ---   screen row (inclusive), i left screen col, i width in cells (0-based, editor grid)
@@ -16,12 +17,27 @@ local losc = require("losc.src.losc")
 local pluginLibUv = require("losc.src.losc.plugins.udp-libuv")
 
 local osc = nil
+local target = "" -- tmux pane id or host terminal device
+
+--- The terminal Neovim's UI runs in: tmux pane, or the TUI process's tty
+--- (the server is a child of the TUI since Neovim 0.10).
+local function findTarget()
+  if vim.env.TMUX_PANE then
+    return vim.env.TMUX_PANE
+  end
+  local tty = vim.trim(vim.fn.system({ "ps", "-o", "tty=", "-p", tostring(vim.uv.os_getppid()) }))
+  if vim.v.shell_error == 0 and tty ~= "" and not tty:match("%?") then
+    return "/dev/" .. tty
+  end
+  return ""
+end
 local augroup = vim.api.nvim_create_augroup("TidalPositions", { clear = true })
 local cache = {} -- buf -> { tick = changedtick, blocks = ... }
 
 --- @param conf { ip: string, port: integer }
 function Positions.launch(conf)
   osc = losc.new({ plugin = pluginLibUv.new({ sendAddr = conf.ip, sendPort = conf.port }) })
+  target = findTarget()
   -- The highlight timer alone (its fps) lets visualizers trail fast scrolling,
   -- so also publish as soon as the view or layout changes.
   vim.api.nvim_create_autocmd({ "WinScrolled", "WinResized", "VimResized", "BufWinEnter", "TextChanged", "TextChangedI" }, {
@@ -89,7 +105,7 @@ function Positions.publish()
   end
 
   local types = { "s", "i", "i" }
-  local args = { vim.env.TMUX_PANE or "", vim.o.lines, vim.o.columns }
+  local args = { target, vim.o.lines, vim.o.columns }
 
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
     local buf = vim.api.nvim_win_get_buf(win)
