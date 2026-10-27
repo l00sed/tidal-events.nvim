@@ -2,11 +2,21 @@ local M = {}
 
 ---@class TidalBootConfig
 ---@field tidal TidalProcConfig
+---@field sclang TidalSclangConfig
 ---@field split "v" | nil
 
 --- Connect to an existing process instead of spawning one.
 --- Type created to allow for a potential TCP backend
 ---@alias TidalRemote { unix: string, eventIdBase?: integer }
+
+--- SuperDirt boot configuration (see tidal/core/sclang.lua)
+---@class TidalSclangConfig
+---@field cmd string
+---@field file string? path to the BootSuperDirt.scd file; required when enabled
+---@field args table<string>
+---@field enabled boolean
+---@field wait integer seconds to wait for the ready file before giving up
+---@field ready_file string? file written by the boot file once SuperDirt is up; nil = no readiness check
 
 ---@class TidalProcConfig
 ---@field cmd string
@@ -17,8 +27,22 @@ local M = {}
 
 ---@class TidalConfig
 local defaults = {
-  --- Configure TidalLaunch command
   boot = {
+    --- Boot SuperDirt before Tidal (see Boot in the README)
+    sclang = {
+      --- Command to launch SuperCollider with; boot file is appended
+      cmd = "sclang",
+      args = {},
+      --- SuperDirt boot file path. Required when enabled is true.
+      file = nil,
+      enabled = false,
+      --- Seconds to wait for the ready file before giving up
+      wait = 60,
+      --- File written by the boot file once SuperDirt is ready; polled after
+      --- spawning sclang and before ghci starts. nil = no readiness check.
+      ready_file = nil,
+    },
+    --- Configure TidalLaunch command
     tidal = {
       --- Command to launch ghci with tidal installation
       cmd = "ghci",

@@ -3,6 +3,7 @@ local highlight = require("tidal.highlighting")
 local marker = require("tidal.highlighting.marker")
 local message = require("tidal.core.message")
 local notify = require("tidal.util.notify")
+local sclang = require("tidal.core.sclang")
 local select = require("tidal.util.select")
 local state = require("tidal.core.state")
 local util = require("tidal.util")
@@ -10,22 +11,53 @@ local util = require("tidal.util")
 
 local M = {}
 
---- Begin a Tidal session
+--- Spawn ghci, start event highlighting and mark the session live.
 ---@param args TidalBootConfig
-function M.launch_tidal(args)
+local function start_tidal(args)
   local current_win = vim.api.nvim_get_current_win()
-  if state.launched then
-    notify.warn("Tidal is already running")
-    return
-  end
   if args.tidal.enabled then
     boot.tidal(args.tidal, args.split)
   end
   M.start_event_highlighting(args.tidal)
   vim.api.nvim_set_current_win(current_win)
   state.launched = true
+end
+
+--- Begin a Tidal session. When boot.sclang.enabled, SuperDirt (sclang) is booted
+--- or reused first and ghci starts once it is ready. The TidalLaunch User
+--- autocommand fires before any process spawns, so hooks can prepare audio
+--- devices before SuperDirt binds one.
+---@param args TidalBootConfig
+function M.launch_tidal(args)
+  if state.launched then
+    notify.warn("Tidal is already running")
+    return
+  end
+  if state.booting then
+    vim.notify("[tidal] waiting for SuperDirt...", vim.log.levels.INFO, { title = "Tidal" })
+    return
+  end
 
   vim.api.nvim_exec_autocmds("User", { pattern = "TidalLaunch" })
+
+  local sclang_opts = args.sclang
+  if sclang_opts and sclang_opts.enabled then
+    state.booting = true
+    if
+      not sclang.boot(sclang_opts, function(ok)
+        state.booting = false
+        if ok and not state.launched then
+          vim.notify("[tidal] SuperDirt ready", vim.log.levels.INFO, { title = "Tidal" })
+          start_tidal(args)
+        end
+      end)
+    then
+      state.booting = false
+    end
+    return
+  end
+
+  start_tidal(args)
 end
 
 function M.start_event_highlighting(args)

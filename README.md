@@ -1,24 +1,12 @@
 # tidal-events.nvim
 
-A Neovim plugin for livecoding with [TidalCycles](https://tidalcycles.org), with
-event highlighting and hooks for driving external visualizers from your code.
+A Neovim plugin for livecoding with [TidalCycles](https://tidalcycles.org), with event highlighting and hooks for driving external visualizers from your code.
 
-This is a fork of [thgrund/tidal.nvim](https://github.com/thgrund/tidal.nvim)
-(whose development has since moved to
-[codeberg.org/MrReason/tidal.nvim](https://codeberg.org/MrReason/tidal.nvim)).
-It keeps the upstream feature set and adds:
+This is a fork of [thgrund/tidal.nvim](https://github.com/thgrund/tidal.nvim) (whose development has since moved to [codeberg.org/MrReason/tidal.nvim](https://codeberg.org/MrReason/tidal.nvim)). It keeps the upstream feature set and adds:
 
-- **Pattern block positions**: publishes the on-screen rectangle of every
-  `dN $ ...` block over OSC, so external tools can draw per-pattern content
-  behind your code (see [Pattern block positions](#pattern-block-positions)).
-- **Terminal relay**: lets a background process write terminal sequences to the
-  host terminal through Neovim's own UI, safely serialized with its redraws
-  (see [Terminal relay](#terminal-relay)).
-
-- **Ghostty audio visualizer** (optional extras): live waveforms behind each
-  `dN` block and audio-reactive terminal shaders for
-  [Ghostty](https://ghostty.org), built on the two features above (see
-  [extras/ghostty](extras/ghostty/README.md)).
+- **Pattern block positions**: publishes the on-screen rectangle of every `dN $ ...` block over OSC, so external tools can draw per-pattern content behind your code (see [Pattern block positions](#pattern-block-positions)).
+- **Terminal relay**: lets a background process write terminal sequences to the host terminal through Neovim's own UI, safely serialized with its redraws (see [Terminal relay](#terminal-relay)).
+- **Ghostty audio visualizer** (optional extras): live waveforms behind each `dN` block and audio-reactive terminal shaders for [Ghostty](https://ghostty.org), built on the two features above (see [extras/ghostty](extras/ghostty/README.md)).
 
 All are opt-in and disabled by default.
 
@@ -26,8 +14,7 @@ All are opt-in and disabled by default.
 
 ## Features
 
-- User commands to start/stop Tidal processes in Neovim's built-in terminal
-  (see [Boot](#boot))
+- User commands to start/stop Tidal processes in Neovim's built-in terminal (see [Boot](#boot))
 - Send code to Tidal using built-in [keymaps](#keymaps)
 - Write your own keymaps and functions with the Lua [API](#api)
 - Haskell syntax highlighting for `.tidal` files
@@ -63,10 +50,16 @@ Defaults:
 {
   --- Configure TidalLaunch command
   boot = {
+    sclang = {
+      cmd = "sclang",
+      args = {},
+      file = nil,
+      enabled = false,
+      wait = 60,
+      ready_file = nil,
+    },
     tidal = {
-      --- Command to launch ghci with tidal installation
       cmd = "ghci",
-      args = { "-v0" },
       --- Tidal boot file path (defaults to the one shipped in bootfiles/)
       file = vim.api.nvim_get_runtime_file("bootfiles/BootTidal.hs", false)[1],
       enabled = true,
@@ -120,17 +113,54 @@ Defaults:
 
 - `:TidalLaunch` (or `:Tidal`): starts the TidalCycles process
 - `:TidalQuit`: stops the TidalCycles process
-- `:TidalNotification`: opens a buffer showing the stdout and stderr of the
-  Tidal REPL session
+- `:TidalNotification`: opens a buffer showing the stdout and stderr of the Tidal REPL session
 
-By default, `ghci` runs the `BootTidal.hs` provided by this plugin. SuperDirt
-(SuperCollider) is not started by the plugin; boot it yourself, e.g. with
-[scnvim](#example-integrating-with-scnvim) or an autocommand.
+The plugin never starts SuperDirt; only `ghci` with the `BootTidal.hs` provided here. Start SuperDirt yourself, e.g. with [scnvim](#example-integrating-with-scnvim) or an autocommand — or let the plugin do it with `boot.sclang`.
+
+#### SuperDirt boot
+
+With `boot.sclang.enabled = true`, `:TidalLaunch` first boots SuperDirt and
+starts Tidal only once it is ready:
+
+- `[sclang]` is spawned detached, so SuperDirt keeps playing after Neovim
+  exits. `:TidalQuit` and quitting Neovim do not stop it; stop it with
+  `pkill sclang` or the boot file's own `Cmd+.` equivalents.
+- An sclang process already running with the same boot file (e.g. from a
+  previous Neovim session) is reused, never started twice.
+- `boot.sclang.ready_file` is polled every 100 ms until it appears (up to
+  `boot.sclang.wait` seconds); starting ghci is skipped on timeout and the
+  next `:TidalLaunch` retries.
+- The `TidalLaunch` User autocommand fires before any process spawns, so
+  hooks that must run before SuperDirt binds an audio device (routing system
+  output through BlackHole, etc.) belong there.
+
+```lua
+boot = {
+  sclang = {
+    enabled = true,
+    file = "~/.config/tidal/BootSuperDirt.scd",
+    ready_file = "/tmp/tidal-superdirt-ready",
+  },
+},
+```
+
+`file` is required when enabled. Set `ready_file` to a path your boot file
+writes once SuperDirt is up, at the end of the file, after `~dirt.start` and
+`s.sync`. Omit it to start Tidal immediately after spawning sclang:
+
+```supercollider
+f = File("/tmp/tidal-superdirt-ready".standardizePath, "w");
+f.write("ready");
+f.close;
+```
+
+SuperDirt without this feature (e.g. through scnvim's client, or an
+autocommand that runs `sclang` on its own) works too — attach it to the
+`TidalLaunch` User autocommand, which fires before Tidal starts.
 
 #### Remote backends
 
-Instead of spawning `ghci`, tidal-events.nvim can connect to an existing Tidal
-process over a Unix socket, e.g. to let several editors share one session:
+Instead of spawning `ghci`, tidal-events.nvim can connect to an existing Tidal process over a Unix socket, e.g. to let several editors share one session:
 
 ```lua
 boot = {
@@ -151,8 +181,7 @@ Available in `.tidal` files:
 
 - `send_line`: sends the current line
 - `send_block`: sends the contiguous block of non-empty lines around the cursor
-- `send_node`: sends the expression under the cursor (needs the Haskell
-  treesitter parser)
+- `send_node`: sends the expression under the cursor (needs the Haskell treesitter parser)
 - `send_visual`: sends the current visual selection
 - `send_silence`: sends `d<count> silence` (`d1` without a count)
 - `send_hush`: sends `hush`, silencing all patterns
@@ -161,10 +190,17 @@ Available in `.tidal` files:
 
 User autocommands for custom functionality:
 
-- `TidalLaunch`: fired by `launch_tidal`
+- `TidalLaunch`: fired at the start of `:TidalLaunch`, before any process
+  spawns (`nvim_exec_autocmds`) — hooks here run before SuperDirt is booted
+  and binds audio devices
+- `TidalSuperDirtReady`: fired when `boot.sclang.ready_file` is detected,
+  just before ghci starts
 - `TidalHush`: fired whenever a hush command is sent
 
 #### Example: integrating with scnvim
+
+An alternative to `boot.sclang` for booting SuperDirt through scnvim's client
+(leave `boot.sclang.enabled = false`, or SuperDirt is booted twice):
 
 ```lua
 vim.api.nvim_create_autocmd("User", {
@@ -179,8 +215,7 @@ vim.api.nvim_create_autocmd("User", {
 
 ### Event highlighting
 
-Highlights the mini-notation events as they play. Built for TidalCycles >= 1.10
-and enabled automatically. With a custom `BootTidal.hs`, add the clock target:
+Highlights the mini-notation events as they play. Built for TidalCycles >= 1.10 and enabled automatically. With a custom `BootTidal.hs`, add the clock target:
 
 ```haskell
 let clockShape = OSC "/ping" $ Named {requiredArgs = ["clock"]}
@@ -189,8 +224,7 @@ let clockTarget = Target {oName = "clock", oAddress = "127.0.0.1", oPort = 6013,
 tidalInst <- mkTidalWith [(superdirtTarget { oLatency = -0.02 }, [superdirtShape]), (clockTarget, [clockShape])] (defaultConfig {cFrameTimespan = 1/50, cProcessAhead = 1/20})
 ```
 
-Styles accept anything supported by
-[nvim_set_hl](https://neovim.io/doc/user/api.html#nvim_set_hl()).
+Styles accept anything supported by [nvim_set_hl](https://neovim.io/doc/user/api.html#nvim_set_hl()).
 
 Global style (the `baseName` also applies to remote styles):
 
@@ -237,7 +271,7 @@ Message `/tidal/blocks`, sent every highlight frame and immediately on scroll,
 resize, zoom, buffer switches and edits:
 
 | Argument | Type | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | target | string | `$TMUX_PANE` inside tmux, otherwise the host terminal device (e.g. `/dev/ttys003`), or `""` |
 | lines, columns | int, int | Neovim's screen size |
 | then per visible block: | | |
@@ -245,19 +279,11 @@ resize, zoom, buffer switches and edits:
 | top, bottom | int, int | screen rows (0-based, inclusive) |
 | left, width | int, int | text area columns (0-based) |
 
-Only the block each pattern was **last sent from** is reported. Other `dN`
-definitions of the same pattern, in the same or other buffers, are ignored, so
-sending a different `d2` moves the visual to it. The sent block is tracked
-through edits; `dN silence` and `hush` remove patterns. Folds and scrolled-off
-lines are excluded.
+Only the block each pattern was **last sent from** is reported. Other `dN` definitions of the same pattern, in the same or other buffers, are ignored, so sending a different `d2` moves the visual to it. The sent block is tracked through edits; `dN silence` and `hush` remove patterns. Folds and scrolled-off lines are excluded.
 
 ### Terminal relay
 
-Lets an external process write raw terminal sequences (for example OSC 4
-palette updates that feed a terminal shader) to the host terminal. Writing to
-the terminal from outside would race Neovim's (or tmux's) own output and can
-garble the screen. The relay instead sends them through `nvim_ui_send()`, so
-they are serialized with Neovim's redraws. Requires Neovim >= 0.12.
+Lets an external process write raw terminal sequences (for example OSC 4 palette updates that feed a terminal shader) to the host terminal. Writing to the terminal from outside would race Neovim's (or tmux's) own output and can garble the screen. The relay instead sends them through `nvim_ui_send()`, so they are serialized with Neovim's redraws. Requires Neovim >= 0.12.
 
 ```lua
 highlight = {
@@ -266,16 +292,13 @@ highlight = {
 ```
 
 - Each UDP datagram's payload is written verbatim.
-- Inside tmux it is wrapped in DCS passthrough, and `allow-passthrough` is
-  enabled for Neovim's pane.
+- Inside tmux it is wrapped in DCS passthrough, and `allow-passthrough` is enabled for Neovim's pane.
 - On exit, the palette is reset (`OSC 104`).
 - Only the first Neovim to bind the port relays; others skip silently.
 
 ### Ghostty audio visualizer
 
-[extras/ghostty](extras/ghostty/README.md) contains a ready-made visualizer
-built on block positions and the relay: an encoder script, Ghostty shaders and a
-SuperDirt tap. Install it with:
+[extras/ghostty](extras/ghostty/README.md) contains a ready-made visualizer built on block positions and the relay: an encoder script, Ghostty shaders and a SuperDirt tap. Install it with:
 
 ```sh
 sh extras/ghostty/install.sh   # from the plugin directory; --dry-run to preview
@@ -304,28 +327,25 @@ See [api.lua](lua/tidal/api.lua) for the full list.
 ## Requirements
 
 - macOS or Linux
-- `ghc` with Tidal installed (see the
-  [Tidal install docs](https://tidalcycles.org/docs/getting-started/linux_install))
+- `ghc` with Tidal installed (see the [Tidal install docs](https://tidalcycles.org/docs/getting-started/linux_install))
+- `sclang` on the path with SuperDirt, if using `boot.sclang`
 - Neovim >= 0.10; the terminal relay needs >= 0.12 (`nvim_ui_send`)
 - Haskell treesitter parser for `send_node`
 
 ## Contributing
 
-Issues and pull requests are welcome at
-[l00sed/tidal-events.nvim](https://github.com/l00sed/tidal-events.nvim).
-Changes not specific to the visualizer features are better proposed upstream.
+Issues and pull requests are welcome at [l00sed/tidal-events.nvim](https://github.com/l00sed/tidal-events.nvim). Changes not specific to the visualizer features are better proposed upstream.
 
 ## Related projects
 
-- [thgrund/tidal.nvim](https://github.com/thgrund/tidal.nvim) /
-  [codeberg.org/MrReason/tidal.nvim](https://codeberg.org/MrReason/tidal.nvim):
-  upstream of this fork
-- [robbielyman/tidal.nvim](https://github.com/robbielyman/tidal.nvim): the
-  original project
-- [vim-tidal](https://github.com/tidalcycles/vim-tidal): Vim plugin for
-  TidalCycles
+- [thgrund/tidal.nvim](https://github.com/thgrund/tidal.nvim) / [codeberg.org/MrReason/tidal.nvim](https://codeberg.org/MrReason/tidal.nvim):
+  - upstream of this fork
+- [robbielyman/tidal.nvim](https://github.com/robbielyman/tidal.nvim):
+  - the original project
+- [vim-tidal](https://github.com/tidalcycles/vim-tidal):
+  - Vim plugin for TidalCycles
 - [vscode-tidalcycles](https://github.com/tidalcycles/vscode-tidalcycles):
-  VS Code plugin for TidalCycles
+  - VS Code plugin for TidalCycles
 
 ## License
 
