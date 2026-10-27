@@ -1,0 +1,471 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["numpy", "sounddevice"]
+# ///
+"""Feed live audio data to Ghostty shaders through the terminal palette.
+
+Ghostty exposes the 256-color palette to custom shaders as iPalette[256], so data
+written into palette slots with OSC 4 reaches the shader without drawing anything.
+Text drawn in those palette colors flickers, so the data lives in slots that
+gruvbox-style 256-color themes don't use (see SLOTS), unused groups are reset to
+their default colors, and everything is restored with OSC 104 on exit.
+
+Inside tmux, sequences go through DCS passthrough (this pane gets
+allow-passthrough=all, so it works from a background window). Writing to the
+client tty directly instead would interleave with tmux's output and garble it.
+
+Logical layout, mapped to palette slots through SLOTS (keep in sync with
+shaders/audio-*.glsl):
+    0-2      8 spectrum bands + overall level
+    3-34     --scope: 96-point waveform of the whole mix
+    35       --blocks: (cell width px, cell height px, block count)
+    36       --blocks: (grid cols hi, grid cols lo, grid rows)
+    37-60    --blocks: up to 8 Tidal pattern blocks (d1 $ ...), 3 slots each:
+             (lane + 1, top row, bottom row), (left hi, left lo, brightness),
+             (width hi, width lo, 0)
+    61-132   --blocks: up to 6 lanes of 36-point per-pattern waveforms
+
+--blocks listens on UDP 57130 for
+    /tidal/blocks  from l00sed/tidal-events.nvim (dN block rectangles per pane)
+    /ghostty/scope from ~/.config/tidal/ghostty-scope.scd (waveform per pattern id)
+
+Usage:
+    ghostty-audio                    # BlackHole if present, else default input
+    ghostty-audio --scope --blocks   # everything
+    ghostty-audio --blocks --nvim    # via Neovim's relay: no terminal/tmux pane needed
+    ghostty-audio --device 3         # pick a device (see --list)
+    ghostty-audio --demo             # synthetic levels, no audio needed
+"""
+
+import argparse
+import fcntl
+import tempfile
+import termios
+import os
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+import numpy as np
+
+NBANDS = 8
+# Palette slots 25-231 minus gruvbox's 256-color entries (24 66 72 88 96 100 106
+# 108 109 124 130 132 136 142 166 167 172 175 208 214 223 228 229); 0-24 and the
+# 232-255 gray ramp are left alone too.
+SLOTS = [25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,67,68,69,70,71,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,89,90,91,92,93,94,95,97,98,99,101,102,103,104,105,107,110,111,112,113,114,115,116,117,118,119,120,121,122,123,125,126,127,128,129,131,133,134,135,137,138,139,140,141,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,168,169,170,171,173]
+LEVEL_SLOT = 0
+SCOPE_SLOT = 3
+SCOPE_POINTS = 96
+SCOPE_SPAN = 1024  # samples shown across the screen (~21 ms at 48 kHz)
+GRID_SLOT = 35
+BLOCK_SLOT = 37
+MAX_BLOCKS = 8
+LANE_SLOT = BLOCK_SLOT + 3 * MAX_BLOCKS
+MAX_LANES = 6
+LANE_POINTS = 36
+BLOCK_GROUP = LANE_SLOT + MAX_LANES * LANE_POINTS // 3 - GRID_SLOT  # slots in the --blocks group
+BLOCK_PORT = 57130
+RELAY_PORT = 57131  # tidal-events.nvim relay (highlight.relay)
+FRESH = 0.4  # seconds before block/waveform data counts as stale
+HOLD = 0.1  # waveform age before it starts fading (snapshots arrive every ~17 ms)
+FPS = 60  # keep in sync with `fps` in ~/.config/tidal/ghostty-scope.scd
+FFT_SIZE = 2048
+FMIN, FMAX = 40.0, 16000.0
+ATTACK, RELEASE = 0.6, 0.12
+
+
+class Analyzer:
+    """Turns a rolling audio buffer into smoothed, auto-gained 0..1 band levels."""
+
+    def __init__(self, samplerate: int):
+        self.buf = np.zeros(FFT_SIZE, dtype=np.float32)
+        self.lock = threading.Lock()
+        self.window = np.hanning(FFT_SIZE).astype(np.float32)
+        freqs = np.fft.rfftfreq(FFT_SIZE, 1 / samplerate)
+        edges = np.geomspace(FMIN, min(FMAX, samplerate / 2), NBANDS + 1)
+        self.bins = [
+            b if len(b) else np.array([np.searchsorted(freqs, lo)])
+            for lo, hi in zip(edges, edges[1:])
+            for b in [np.where((freqs >= lo) & (freqs < hi))[0]]
+        ]
+        self.peak = np.full(NBANDS + 1, 1e-3)
+        self.smooth = np.zeros(NBANDS + 1)
+        self.scope_peak = 1e-3
+
+    def push(self, mono: np.ndarray):
+        with self.lock:
+            n = min(len(mono), FFT_SIZE)
+            self.buf = np.roll(self.buf, -n)
+            self.buf[-n:] = mono[-n:]
+
+    def levels(self) -> np.ndarray:
+        with self.lock:
+            frame = self.buf * self.window
+        mag = np.abs(np.fft.rfft(frame))
+        raw = np.array([mag[b].mean() for b in self.bins] + [np.sqrt(np.mean(frame**2)) * 40])
+        # Slowly decaying per-band peak acts as automatic gain control.
+        self.peak = np.maximum(self.peak * 0.995, raw)
+        norm = np.clip(raw / np.maximum(self.peak, 1e-3), 0, 1)
+        norm[raw < 1e-4] = 0
+        rate = np.where(norm > self.smooth, ATTACK, RELEASE)
+        self.smooth += (norm - self.smooth) * rate
+        return self.smooth
+
+    def scope(self) -> np.ndarray:
+        """Trigger-stabilized waveform as SCOPE_POINTS values in 0..1 (0.5 = silence)."""
+        with self.lock:
+            buf = self.buf.copy()
+        # Lock onto the last rising zero crossing that leaves a full span, like a scope
+        # trigger, so periodic sounds stand still instead of scrolling.
+        search = buf[: FFT_SIZE - SCOPE_SPAN]
+        rising = np.where((search[:-1] < 0) & (search[1:] >= 0))[0]
+        start = rising[-1] if len(rising) else FFT_SIZE - SCOPE_SPAN
+        span = buf[start : start + SCOPE_SPAN]
+        self.scope_peak = max(self.scope_peak * 0.99, float(np.abs(span).max()), 1e-3)
+        pts = np.interp(np.linspace(0, SCOPE_SPAN - 1, SCOPE_POINTS), np.arange(SCOPE_SPAN), span)
+        return 0.5 + 0.5 * pts / self.scope_peak
+
+
+def parse_osc(data: bytes):
+    """Minimal OSC message parser (int, float, string arguments)."""
+
+    def string(i):
+        end = data.index(b"\0", i)
+        return data[i:end].decode(), (end + 4) // 4 * 4
+
+    address, i = string(0)
+    tags, i = string(i)
+    args = []
+    for t in tags[1:]:
+        if t in "if":
+            args.append(struct.unpack(">" + t, data[i : i + 4])[0])
+            i += 4
+        elif t == "s":
+            s, i = string(i)
+            args.append(s)
+    return address, args
+
+
+class BlockFeed:
+    """Collects Tidal pattern block rectangles and per-pattern waveforms, and lays
+    them out in client (tmux window) cell coordinates for the shader."""
+
+    GEOMETRY = (
+        "#{pane_left} #{pane_top} #{client_cell_width} #{client_cell_height} "
+        "#{client_width} #{client_height} #{status} #{status-position} "
+        "#{window_active} #{window_zoomed_flag} #{pane_active}"
+    )
+    # Changes whenever pane geometry/visibility may have changed (zoom, splits,
+    # window switches); polled instead of attaching a control-mode client, which
+    # tmux would treat as a focused client.
+    LAYOUT = "#{session_name} #{window_id} #{window_layout} #{window_zoomed_flag} #{client_width}x#{client_height}"
+    LAYOUT_POLL = 0.05
+
+    def __init__(self, port: int):
+        self.lock = threading.Lock()
+        self.waves = {}  # pattern id -> (time, points in -1..1)
+        self.peaks = {}  # pattern id -> slowly decaying peak for auto gain
+        self.blocks = (0.0, "", [])  # (time, tmux pane, [(id, top, bottom, left, width)])
+        self.grid = None  # last (editor lines, editor columns) from Neovim
+        self.geometry = {}  # pane -> (time, geometry dict or None)
+        self.layout_gen = 0  # bumped on every layout change; guards against stale lookups
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", port))
+        threading.Thread(target=self._listen, args=(sock,), daemon=True).start()
+        if os.environ.get("TMUX"):
+            threading.Thread(target=self._watch_tmux, daemon=True).start()
+
+    def _watch_tmux(self):
+        """Drops cached geometry as soon as tmux's layout changes instead of
+        waiting for the cache to expire."""
+        last = None
+        while True:
+            out = subprocess.run(["tmux", "display", "-p", self.LAYOUT], capture_output=True, text=True).stdout
+            if out != last:
+                last = out
+                self._invalidate()
+            time.sleep(self.LAYOUT_POLL)
+
+    def _invalidate(self):
+        with self.lock:
+            self.layout_gen += 1
+            self.geometry.clear()
+
+    def _listen(self, sock):
+        while True:
+            try:
+                address, args = parse_osc(sock.recv(65536))
+            except (ValueError, struct.error, UnicodeDecodeError):
+                continue
+            now = time.monotonic()
+            with self.lock:
+                if address == "/ghostty/scope" and len(args) > 1:
+                    pid, pts = int(args[0]), np.array(args[1:], dtype=np.float32)
+                    self.peaks[pid] = max(self.peaks.get(pid, 1e-3) * 0.97, float(np.abs(pts).max()), 1e-3)
+                    self.waves[pid] = (now, pts / self.peaks[pid])
+                elif address == "/tidal/blocks" and len(args) >= 3:
+                    flat = args[3:]
+                    blocks = [tuple(int(v) for v in flat[k : k + 5]) for k in range(0, len(flat) - 4, 5)]
+                    self.blocks = (now, str(args[0]), blocks)
+                    # Neovim's screen size changing means its pane moved or resized.
+                    if (args[1], args[2]) != self.grid:
+                        self.grid = (args[1], args[2])
+                        self.layout_gen += 1
+                        self.geometry.clear()
+
+    def _pane_geometry(self, pane: str):
+        """Pane position and client cell metrics, or None while the pane isn't
+        visible (other window active, or another pane zoomed)."""
+        with self.lock:
+            cached = self.geometry.get(pane)
+            gen = self.layout_gen
+        if cached and time.monotonic() - cached[0] < 0.5:
+            return cached[1]
+        geo = None
+        if pane.startswith("/dev/"):
+            geo = self._tty_geometry(pane)
+        elif pane:
+            out = subprocess.run(["tmux", "display", "-p", "-t", pane, self.GEOMETRY], capture_output=True, text=True)
+            parts = out.stdout.split()
+            if len(parts) == 11:
+                window_active, zoomed, pane_active = parts[8:]
+                if window_active == "1" and (zoomed == "0" or pane_active == "1"):
+                    left, top, cw, ch, cols, rows = (int(p) for p in parts[:6])
+                    status = {"on": 1, "off": 0}.get(parts[6], int(parts[6]) if parts[6].isdigit() else 1)
+                    if parts[7] == "top":
+                        top += status
+                    geo = dict(left=left, top=top, cw=cw, ch=ch, cols=cols, rows=rows)
+        with self.lock:
+            # A layout change during the lookup may have made this result stale.
+            if gen == self.layout_gen:
+                self.geometry[pane] = (time.monotonic(), geo)
+        return geo
+
+    @staticmethod
+    def _tty_geometry(tty: str):
+        """Outside tmux Neovim fills the whole terminal; read its cell size in
+        pixels from the tty's window size (no bytes are written)."""
+        try:
+            fd = os.open(tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+            try:
+                rows, cols, xpx, ypx = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+            finally:
+                os.close(fd)
+        except OSError:
+            return None
+        if not (rows and cols and xpx and ypx):
+            return None
+        return dict(left=0, top=0, cw=xpx // cols, ch=ypx // rows, cols=cols, rows=rows)
+
+    def values(self) -> np.ndarray | None:
+        """Values for the --blocks slot group, packed 3 per slot, or None when no
+        audible pattern block is on screen (the slots are then reset to default)."""
+        now = time.monotonic()
+        with self.lock:
+            t, pane, blocks = self.blocks
+            waves = {pid: pts for pid, (wt, pts) in self.waves.items() if now - wt < FRESH}
+            # Fade out once a pattern goes quiet instead of freezing on its last snapshot.
+            fade = {pid: min(1.0, (FRESH - (now - wt)) / (FRESH - HOLD)) for pid, (wt, _) in self.waves.items() if pid in waves}
+        geo = self._pane_geometry(pane) if now - t < FRESH else None
+
+        out = np.zeros((LANE_SLOT + MAX_LANES * LANE_POINTS // 3 - GRID_SLOT) * 3)
+        lanes = []
+        if geo:
+            # Only audible patterns get a lane; silent blocks draw nothing.
+            lanes = sorted({b[0] for b in blocks if b[0] in waves})[:MAX_LANES]
+            shown = [b for b in blocks if b[0] in lanes][:MAX_BLOCKS]
+            out[0:6] = [geo["cw"], geo["ch"], len(shown), geo["cols"] >> 8, geo["cols"] & 255, geo["rows"]]
+            for k, (pid, top, bottom, left, width) in enumerate(shown):
+                c = geo["left"] + left
+                base = (BLOCK_SLOT - GRID_SLOT + 3 * k) * 3
+                out[base : base + 9] = [
+                    lanes.index(pid) + 1, geo["top"] + top, geo["top"] + bottom,
+                    c >> 8, c & 255, round(fade[pid] * 255),
+                    width >> 8, width & 255, 0,
+                ]
+        out /= 255
+        for n, pid in enumerate(lanes):
+            src = waves[pid]
+            pts = np.interp(np.linspace(0, len(src) - 1, LANE_POINTS), np.arange(len(src)), src)
+            base = (LANE_SLOT - GRID_SLOT) * 3 + n * LANE_POINTS
+            out[base : base + LANE_POINTS] = 0.5 + 0.5 * np.clip(pts, -1, 1)
+        return out if lanes else None
+
+
+class PaletteWriter:
+    """Writes values into palette slots (logical index -> SLOTS).
+
+    Default: writes to this process's terminal, via tmux passthrough when inside
+    tmux (so it must run in a tmux pane). With relay_port: sends the raw sequences
+    over UDP to Neovim (tidal-events.nvim relay), which writes them to the host
+    terminal itself, serialized with its redraws. That needs no terminal, so the
+    encoder can run as a plain background job, with or without tmux."""
+
+    def __init__(self, relay_port: int | None = None):
+        self.relay = None
+        self.tmux = False
+        if relay_port:
+            self.relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.relay.connect(("127.0.0.1", relay_port))
+        else:
+            self.tmux = bool(os.environ.get("TMUX"))
+            if self.tmux:
+                pane = os.environ.get("TMUX_PANE", "")
+                subprocess.run(["tmux", "set", "-p", "-t", pane, "allow-passthrough", "all"], check=False)
+            self.out = open("/dev/tty", "w")
+        self.used = set()
+        self.last = {}  # slot -> (r, g, b) last sent
+        # A previous run killed with its tmux window can't restore its slots on exit
+        # (also clears the old contiguous 88-220 layout), and an earlier version that
+        # wrote to the client tty directly could garble a base color. Reset all of
+        # them (to the theme's values) before starting.
+        self._send([self._reset(set(range(16)) | set(SLOTS) | set(range(88, 221)))])
+
+    @staticmethod
+    def _reset(slots) -> str:
+        return "\x1b]104;" + ";".join(map(str, sorted(slots))) + "\x1b\\"
+
+    def _send(self, seqs: list[str]):
+        if not seqs:
+            return
+        # tmux re-initializes the terminal after every passthrough (cursor to 1;1,
+        # cursor style reset, full repaint), so send at most one per frame. Don't
+        # open a synchronized update (?2026h) to hide that: tmux doesn't reliably
+        # close it, and Ghostty then holds rendering until its timeout (laggy).
+        seq = "".join(seqs)
+        if self.relay:
+            try:
+                self.relay.send(seq.encode())
+            except OSError:
+                pass  # Neovim's relay isn't listening (yet)
+            return
+        if self.tmux:
+            seq = "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+        self.out.write(seq)
+        self.out.flush()
+
+    def write(self, chunks: list[tuple[int, np.ndarray | None, int]]):
+        """Each chunk is (first logical slot, values or None, slot count). Values
+        are packed three per slot (r, g, b); None resets those slots to default.
+        Only slots whose color changed are sent."""
+        seq = []
+        for first, values, count in chunks:
+            slots = SLOTS[first : first + count]
+            if values is None:
+                stale = self.used.intersection(slots)
+                if stale:
+                    seq.append(self._reset(stale))
+                    self.used -= stale
+                    for slot in stale:
+                        self.last.pop(slot, None)
+                continue
+            v = np.zeros(count * 3)
+            v[: len(values)] = values
+            q = np.round(np.clip(v, 0, 1) * 255).astype(int).reshape(count, 3)
+            for slot, (r, g, b) in zip(slots, q):
+                if self.last.get(slot) == (r, g, b):
+                    continue
+                self.last[slot] = (r, g, b)
+                seq.append(f"\x1b]4;{slot};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\")
+                self.used.add(slot)
+        self._send(seq)
+
+    def close(self):
+        if self.used:
+            self._send([self._reset(self.used)])
+        (self.relay or self.out).close()
+
+
+def pick_device(sd, requested):
+    if requested is not None:
+        return int(requested) if str(requested).isdigit() else requested
+    for i, d in enumerate(sd.query_devices()):
+        if "blackhole" in d["name"].lower() and d["max_input_channels"] > 0:
+            return i
+    return None
+
+
+def demo_levels(t: float) -> np.ndarray:
+    beat = np.exp(-((t * 2) % 1) * 6)
+    bands = [beat] + [0.5 + 0.5 * np.sin(t * (1.3 + i * 0.7) + i) for i in range(1, NBANDS)]
+    return np.array(bands + [0.3 + 0.7 * beat])
+
+
+def demo_scope(t: float) -> np.ndarray:
+    x = np.linspace(0, 1, SCOPE_POINTS)
+    wave = np.sin(2 * np.pi * 3 * x) * 0.7 + np.sin(2 * np.pi * 11 * x + t * 3) * 0.25
+    return 0.5 + 0.5 * wave * (0.4 + 0.6 * np.exp(-((t * 2) % 1) * 4))
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--device", help="input device index or name substring")
+    p.add_argument("--list", action="store_true", help="list audio devices and exit")
+    p.add_argument("--demo", action="store_true", help="synthetic levels, no audio capture")
+    p.add_argument("--scope", action="store_true", help="also send a waveform of the whole mix")
+    p.add_argument("--blocks", action="store_true", help=f"draw per-pattern waveforms behind Tidal dN blocks (UDP {BLOCK_PORT})")
+    p.add_argument("--nvim", type=int, nargs="?", const=RELAY_PORT, metavar="PORT",
+                   help=f"send palette updates to Neovim's relay (UDP, default {RELAY_PORT}) instead of a terminal")
+    p.add_argument("--fps", type=int, default=FPS, help=f"palette updates per second (default {FPS})")
+    args = p.parse_args()
+
+    # Single instance: a second encoder would fight over the same palette slots.
+    lock = open(os.path.join(tempfile.gettempdir(), "ghostty-audio.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("ghostty-audio is already running", file=sys.stderr)
+        return
+
+    stream = analyzer = None
+    if not args.demo:
+        import sounddevice as sd
+
+        if args.list:
+            print(sd.query_devices())
+            return
+        device = pick_device(sd, args.device)
+        info = sd.query_devices(device, "input")
+        analyzer = Analyzer(int(info["default_samplerate"]))
+        stream = sd.InputStream(
+            device=device,
+            channels=min(2, info["max_input_channels"]),
+            samplerate=info["default_samplerate"],
+            blocksize=512,
+            callback=lambda data, *_: analyzer.push(data.mean(axis=1)),
+        )
+        stream.start()
+        print(f"capturing: {info['name']}", file=sys.stderr)
+
+    feed = BlockFeed(BLOCK_PORT) if args.blocks else None
+    writer = PaletteWriter(args.nvim)
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: stop.set())
+
+    start = next_frame = time.monotonic()
+    try:
+        while not stop.is_set():
+            t = time.monotonic() - start
+            chunks = [(LEVEL_SLOT, demo_levels(t) if args.demo else analyzer.levels(), 3)]
+            if args.scope:
+                chunks.append((SCOPE_SLOT, demo_scope(t) if args.demo else analyzer.scope(), SCOPE_POINTS // 3))
+            if feed:
+                chunks.append((GRID_SLOT, feed.values(), BLOCK_GROUP))
+            writer.write(chunks)
+            # Schedule against a fixed clock so per-frame work doesn't lower the rate.
+            next_frame = max(next_frame + 1 / args.fps, time.monotonic())
+            stop.wait(max(0.0, next_frame - time.monotonic()))
+    finally:
+        writer.close()
+        if stream:
+            stream.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -15,7 +15,12 @@ It keeps the upstream feature set and adds:
   host terminal through Neovim's own UI, safely serialized with its redraws
   (see [Terminal relay](#terminal-relay)).
 
-Both are opt-in and disabled by default.
+- **Ghostty audio visualizer** (optional extras): live waveforms behind each
+  `dN` block and audio-reactive terminal shaders for
+  [Ghostty](https://ghostty.org), built on the two features above (see
+  [extras/ghostty](extras/ghostty/README.md)).
+
+All are opt-in and disabled by default.
 
 ![pluginExample](./assets/pluginExample.png)
 
@@ -265,6 +270,16 @@ highlight = {
   enabled for Neovim's pane.
 - On exit, the palette is reset (`OSC 104`).
 - Only the first Neovim to bind the port relays; others skip silently.
+
+### Ghostty audio visualizer
+
+[extras/ghostty](extras/ghostty/README.md) contains a ready-made visualizer
+built on block positions and the relay: an encoder script, Ghostty shaders and a
+SuperDirt tap. Install it with:
+
+```sh
+sh extras/ghostty/install.sh   # from the plugin directory; --dry-run to preview
+```
 
 ### API
 
