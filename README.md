@@ -2,11 +2,12 @@
 
 A Neovim plugin for livecoding with [TidalCycles](https://tidalcycles.org), with event highlighting and hooks for driving external visualizers from your code.
 
-This is a fork of [thgrund/tidal.nvim](https://github.com/thgrund/tidal.nvim) (whose development has since moved to [codeberg.org/MrReason/tidal.nvim](https://codeberg.org/MrReason/tidal.nvim)). It keeps the upstream feature set and adds:
+This is a fork of [thgrund/tidal.nvim](https://github.com/thgrund/tidal.nvim) (archived; development continues at [codeberg.org/MrReason/tidal.nvim](https://codeberg.org/MrReason/tidal.nvim)). It keeps the upstream feature set and adds:
 
 - **Pattern block positions**: publishes the on-screen rectangle of every `dN $ ...` block over OSC, so external tools can draw per-pattern content behind your code (see [Pattern block positions](#pattern-block-positions)).
 - **Terminal relay**: lets a background process write terminal sequences to the host terminal through Neovim's own UI, safely serialized with its redraws (see [Terminal relay](#terminal-relay)).
 - **Ghostty audio visualizer** (optional extras): live waveforms behind each `dN` block and audio-reactive terminal shaders for [Ghostty](https://ghostty.org), built on the two features above (see [extras/ghostty](extras/ghostty/README.md)).
+- **SuperDirt lifecycle** (`boot.sclang`): this fork keeps `boot.sclang`, the ready-file check and `:TidalRestart` inside the plugin, which upstream removed in [issue 32](https://codeberg.org/MrReason/tidal.nvim/issues/32) in favor of external setup (scnvim). Owning SuperDirt's boot here is what makes output-device pinning and clean restarts possible, so this is a deliberate divergence — don't drop it when syncing with upstream.
 
 All are opt-in and disabled by default.
 
@@ -113,6 +114,7 @@ Defaults:
 
 - `:TidalLaunch` (or `:Tidal`): starts the TidalCycles process
 - `:TidalQuit`: stops the TidalCycles process
+- `:TidalRestart`: hushes, stops the TidalCycles process, kills leftover SuperDirt processes and launches fresh through the normal launch path. Use it after changing audio outputs: SuperDirt binds its output device at boot, and a detached sclang from an earlier session keeps playing into whatever device existed then until it is killed.
 - `:TidalNotification`: opens a buffer showing the stdout and stderr of the Tidal REPL session
 
 The plugin never starts SuperDirt; only `ghci` with the `BootTidal.hs` provided here. Start SuperDirt yourself, e.g. with [scnvim](#example-integrating-with-scnvim) or an autocommand — or let the plugin do it with `boot.sclang`.
@@ -331,10 +333,16 @@ See [api.lua](lua/tidal/api.lua) for the full list.
 - `sclang` on the path with SuperDirt, if using `boot.sclang`
 - Neovim >= 0.10; the terminal relay needs >= 0.12 (`nvim_ui_send`)
 - Haskell treesitter parser for `send_node`
+- For the optional [Ghostty audio visualizer](extras/ghostty/README.md): BlackHole for system audio capture, plus
+  [SwitchAudioSource](https://github.com/diogod/switchaudio-osx) (`brew install switchaudio-osx`) or Audio MIDI Setup to
+  switch the macOS system output to the multi-output device that feeds it
 
 ## Contributing
 
-Issues and pull requests are welcome at [l00sed/tidal-events.nvim](https://github.com/l00sed/tidal-events.nvim). Changes not specific to the visualizer features are better proposed upstream.
+Issues and pull requests are welcome at [l00sed/tidal-events.nvim](https://github.com/l00sed/tidal-events.nvim). Upstream
+development continues at [codeberg.org/MrReason/tidal.nvim](https://codeberg.org/MrReason/tidal.nvim) (the archived GitHub fork
+is no longer the home of this code); changes not specific to the added features or SuperDirt lifecycle are welcome there too —
+but note this fork diverges deliberately on `boot.sclang` (see the fork description above).
 
 ## Related projects
 

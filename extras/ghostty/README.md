@@ -42,6 +42,10 @@ outside Tidal. The per-pattern waveforms come from SuperCollider.
   script that installs `numpy` and `sounddevice` on first run)
 - [BlackHole](https://github.com/ExistentialAudio/BlackHole) for system audio
   capture (optional; `--demo` and `--blocks` work without it)
+- [SwitchAudioSource](https://github.com/diogod/switchaudio-osx)
+  (`brew install switchaudio-osx`) to switch the macOS system output between
+  the multi-output device and the plain speakers from the shell, e.g. with the
+  `blackhole` and `speakers` aliases (optional; Audio MIDI Setup works too)
 - SuperCollider + SuperDirt for per-pattern waveforms
 
 ## Install
@@ -74,7 +78,16 @@ With packer.nvim, use `run = "sh extras/ghostty/install.sh"`.
 
    ```sh
    swift ~/.config/ghostty/bin/make-multi-output.swift <speakers-uid> <blackhole-uid>
+   SwitchAudioSource -t output -s "Multi-Output Device"
    ```
+
+   `SwitchAudioSource` comes from `brew install switchaudio-osx`. A device
+   created through Audio MIDI Setup instead of `make-multi-output.swift` is
+   named "Multi-Output Device"; list the real names with
+   `SwitchAudioSource -a -t output` and match the name you switch with.
+   Remember this step whenever the shaders seem dead: with the output on the
+   plain speakers, BlackHole is silent and only the SuperDirt-driven waveforms
+   (`audio-tidal-waves`) still work.
 
 2. Ghostty config. Put `audio-tidal-waves.glsl` first: it reads the raw
    terminal to keep waveforms behind text, and later shaders distort both.
@@ -120,6 +133,10 @@ Try `ghostty-audio --demo` to check the shaders without any audio.
 
 ## Notes
 
+- After a macOS update, an aggregate device can survive with a broken
+  sub-device: audio reaches BlackHole (shaders react) but nothing comes out of
+  the speakers. Recreate it with `make-multi-output.swift` (`SwitchAudioSource
+  -a -t output` gives device UIDs; delete the broken one in Audio MIDI Setup).
 - Data uses palette slots that gruvbox-style 256-color themes leave unused.
   Text drawn in those colors will flicker. The slot table (`SLOTS` in
   `ghostty-audio`) must match the shaders.
