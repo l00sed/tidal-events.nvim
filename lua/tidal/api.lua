@@ -82,6 +82,65 @@ function M.exit_tidal()
   state.launched = false
 end
 
+---Poll until no sclang process with this boot file is running (max ~2 s).
+---@param file string expanded boot file path
+---@param attempt integer
+---@param done fun()
+local function wait_sclang_gone(file, attempt, done)
+  if attempt >= 20 or not sclang.is_running(file) then
+    return done()
+  end
+  vim.defer_fn(function()
+    wait_sclang_gone(file, attempt + 1, done)
+  end, 100)
+end
+
+---Restart the Tidal session with a clean SuperDirt boot. sclang is detached
+---and binds its audio output device when it boots, so an instance left over
+---from an earlier session keeps playing into whatever device existed then
+---(renamed device, recreated aggregate...) — audible silence. TidalRestart
+---hushes, quits the REPL, kills leftover SuperDirt processes and launches
+---fresh through the normal launch path (the TidalLaunch autocommand fires).
+---@param args TidalBootConfig
+function M.restart_tidal(args)
+  if state.booting then
+    notify.warn("SuperDirt boot already in progress")
+    return
+  end
+
+  if state.launched then
+    pcall(message.tidal.send_line, "hush", { 0, 0 })
+    vim.api.nvim_exec_autocmds("User", { pattern = "TidalHush", modeline = false })
+    if state.ghci then
+      state.ghci:exit()
+    end
+    state.launched = false
+  end
+
+  local sclang_opts = args.sclang
+  local file = (sclang_opts and sclang_opts.enabled and sclang_opts.file) and vim.fn.expand(sclang_opts.file) or nil
+  if file and sclang.is_running(file) then
+    vim.fn.system({ "pkill", "-f", file })
+  end
+
+  local function launch()
+    if file then
+      -- sclang doesn't always keep its scsynth child clean when terminated,
+      -- and a second server can't bind port 57110 while one lingers.
+      vim.fn.system({ "pkill", "-x", "scsynth" })
+    end
+    vim.defer_fn(function()
+      M.launch_tidal(args)
+    end, 300)
+  end
+
+  if file then
+    wait_sclang_gone(file, 0, launch)
+  else
+    launch()
+  end
+end
+
 ---@return message.TidalRepl
 local function ft_to_repl()
   local ft = vim.api.nvim_get_option_value("filetype", { buf = 0 })

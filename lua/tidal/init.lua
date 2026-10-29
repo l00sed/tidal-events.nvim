@@ -39,6 +39,10 @@ local function setup_user_commands()
     api.launch_tidal(config.options.boot)
   end, { desc = "Launch Tidal instance" })
   vim.api.nvim_create_user_command("TidalQuit", api.exit_tidal, { desc = "Quit Tidal instance" })
+
+  vim.api.nvim_create_user_command("TidalRestart", function()
+    api.restart_tidal(config.options.boot)
+  end, { desc = "Restart Tidal with a clean SuperDirt boot" })
 end
 
 local function setup_autocmds()
