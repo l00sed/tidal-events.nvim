@@ -9,6 +9,7 @@ local highlight = require("tidal.highlighting.highlights")
 local processor = nil
 
 local state = require("tidal.core.state")
+local servers = {}
 
 local function startServer(host, port)
   local transport = pluginLibUv.new({ recvAddr = host, recvPort = port })
@@ -27,6 +28,7 @@ local function startServer(host, port)
   end)
 
   osc:open()
+  table.insert(servers, osc)
 end
 
 local function startStyleServer(host, port)
@@ -70,6 +72,7 @@ local function startStyleServer(host, port)
   end)
 
   osc:open()
+  table.insert(servers, osc)
 end
 
 function OSC.launch(highlightConf)
@@ -84,6 +87,14 @@ function OSC.launch(highlightConf)
 
   startServer(eventOsc.ip, eventOsc.port)
   startStyleServer(styleOsc.ip, styleOsc.port)
+end
+
+function OSC.stop()
+  for _, osc in ipairs(servers) do
+    pcall(osc.close, osc)
+  end
+  servers = {}
+  processor = nil
 end
 
 return OSC

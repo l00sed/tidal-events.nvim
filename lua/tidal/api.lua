@@ -80,6 +80,8 @@ function M.exit_tidal(args)
     state.ghci:exit()
   end
 
+  M.stop_event_highlighting()
+
   -- Kill leftover SuperDirt (sclang) and scsynth, the same way
   -- TidalRestart does, so :TidalQuit fully stops the audio.
   local sclang_opts = args and args.sclang
@@ -126,6 +128,7 @@ function M.restart_tidal(args)
     if state.ghci then
       state.ghci:exit()
     end
+    M.stop_event_highlighting()
     state.launched = false
   end
 

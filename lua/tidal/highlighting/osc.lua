@@ -13,6 +13,7 @@ local activeMessages = {}
 OSC.timer = nil
 
 local handleMessageCallback = nil
+local servers = {}
 
 local uv = vim.uv
 
@@ -38,6 +39,7 @@ local function startServer(host, port)
   end)
 
   osc:open()
+  table.insert(servers, osc)
 end
 
 local function startStyleServer(host, port)
@@ -54,6 +56,7 @@ local function startStyleServer(host, port)
   end)
 
   osc:open()
+  table.insert(servers, osc)
 end
 
 local function handleMessages()
@@ -104,6 +107,14 @@ function OSC.clearInterval()
     OSC.timer = nil
   end
   messageBuffer = {}
+end
+
+function OSC.stop()
+  OSC.clearInterval()
+  for _, osc in ipairs(servers) do
+    pcall(osc.close, osc)
+  end
+  servers = {}
 end
 
 OSC._messageBuffer = messageBuffer

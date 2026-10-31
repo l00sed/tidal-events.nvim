@@ -44,6 +44,8 @@ end
 
 function EventHighlights.stop()
   osc:clearInterval()
+  osc.stop()
+  playstateOsc.stop()
   positions.stop()
   relay.stop()
 end
