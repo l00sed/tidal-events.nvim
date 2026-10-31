@@ -69,7 +69,8 @@ function M.stop_event_highlighting()
 end
 
 --- Quit Tidal session
-function M.exit_tidal()
+---@param args TidalBootConfig
+function M.exit_tidal(args)
   if not state.launched then
     notify.warn("Tidal is not running. Launch with ':TidalLaunch'")
     return
@@ -77,6 +78,17 @@ function M.exit_tidal()
 
   if state.ghci then
     state.ghci:exit()
+  end
+
+  -- Kill leftover SuperDirt (sclang) and scsynth, the same way
+  -- TidalRestart does, so :TidalQuit fully stops the audio.
+  local sclang_opts = args and args.sclang
+  local file = (sclang_opts and sclang_opts.enabled and sclang_opts.file) and vim.fn.expand(sclang_opts.file) or nil
+  if file and sclang.is_running(file) then
+    vim.fn.system({ "pkill", "-f", file })
+  end
+  if file then
+    vim.fn.system({ "pkill", "-x", "scsynth" })
   end
 
   state.launched = false

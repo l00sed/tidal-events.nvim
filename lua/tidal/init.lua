@@ -33,12 +33,12 @@ local function setup_user_commands()
       state.ghci:showNotificationBuffer("tidal_post")
     end
   end, { desc = "Launch Tidal Notification Buffer" })
-  vim.api.nvim_create_user_command("TidalQuit", api.exit_tidal, { desc = "Quit Tidal instance" })
-
   vim.api.nvim_create_user_command("Tidal", function()
     api.launch_tidal(config.options.boot)
   end, { desc = "Launch Tidal instance" })
-  vim.api.nvim_create_user_command("TidalQuit", api.exit_tidal, { desc = "Quit Tidal instance" })
+  vim.api.nvim_create_user_command("TidalQuit", function()
+    api.exit_tidal(config.options.boot)
+  end, { desc = "Quit Tidal instance" })
 
   vim.api.nvim_create_user_command("TidalRestart", function()
     api.restart_tidal(config.options.boot)
