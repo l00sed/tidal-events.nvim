@@ -70,6 +70,8 @@ function M.new(options)
   local self = setmetatable({}, M)
   self.options = options or {}
   self.handle = uv.new_udp("inet")
+  self.timers = {}
+  self.closed = false
   assert(self.handle, "Could not create UDP handle.")
   return self
 end
@@ -90,8 +92,22 @@ function M:schedule(timestamp, handler) -- luacheck: ignore
   timestamp = math.max(0, timestamp)
   if timestamp > 0 then
     local timer = uv.new_timer()
-    timer:start(timestamp, 0, handler)
-  else
+    table.insert(self.timers, timer)
+    timer:start(timestamp, 0, function()
+      for i = #self.timers, 1, -1 do
+        if self.timers[i] == timer then
+          table.remove(self.timers, i)
+          break
+        end
+      end
+      if not timer:is_closing() then
+        timer:close()
+      end
+      if not self.closed then
+        handler()
+      end
+    end)
+  elseif not self.closed then
     handler()
   end
 end
@@ -129,11 +145,19 @@ end
 
 --- Close UDP server.
 function M:close()
-  self.handle:recv_stop()
-  if not self.handle:is_closing() then
+  self.closed = true
+
+  if self.handle and not self.handle:is_closing() then
+    self.handle:recv_stop()
     self.handle:close()
   end
-  uv.walk(uv.close)
+
+  for _, timer in ipairs(self.timers or {}) do
+    if not timer:is_closing() then
+      timer:close()
+    end
+  end
+  self.timers = {}
 end
 
 --- Send a OSC packet.
