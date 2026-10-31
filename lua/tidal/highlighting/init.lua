@@ -43,7 +43,6 @@ function EventHighlights.start(highlight)
 end
 
 function EventHighlights.stop()
-  osc:clearInterval()
   osc.stop()
   playstateOsc.stop()
   positions.stop()
