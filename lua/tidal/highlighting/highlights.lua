@@ -37,6 +37,7 @@ function Highlights.addHighlight(id, buf, markerId)
       end_col = extMark[3].end_col,
       id = markerId,
       hl_group = selectHlGroup(id),
+      strict = false,
       end_row = extMark[3].end_row,
     })
   end
@@ -53,6 +54,7 @@ function Highlights.addAllHighlights()
           end_col = marker.colEnd,
           id = marker.markerId,
           hl_group = "CodeHighlight",
+          strict = false,
         })
       end
     end
@@ -68,6 +70,7 @@ function Highlights.removeHighlight(buf, markerId)
       end_col = extMark[3].end_col,
       id = markerId,
       hl_group = nil,
+      strict = false,
       end_row = extMark[3].end_row,
     })
   end
@@ -83,6 +86,7 @@ function Highlights.removeAllHighlights()
         end_col = marker.colEnd,
         id = marker.markerId,
         hl_group = nil,
+        strict = false,
       })
     end
   end
