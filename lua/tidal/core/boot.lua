@@ -12,7 +12,8 @@ function M.tidal(opts, split)
     return
   end
 
-  local ghci = Ghci:new({
+  local ghci
+  ghci = Ghci:new({
     name = "tidal-fast://ghci-output",
     cmd = opts.cmd,
     args = vim.list_extend({
@@ -20,7 +21,11 @@ function M.tidal(opts, split)
       "-ghci-script=" .. vim.fn.expand(opts.file),
     }, opts.args or {}),
     on_exit = function(_code, _signal)
-      state.ghci = nil
+      -- on restart the old ghci can exit after the new one started; only clear
+      -- the session if it's still this one, or sends silently go nowhere
+      if state.ghci == ghci then
+        state.ghci = nil
+      end
     end,
   })
 

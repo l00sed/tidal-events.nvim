@@ -319,6 +319,33 @@ describe("Repl", function()
   end)
 
   describe("attach", function()
+    it("notifies on GHC errors but not on warnings that mention 'error'", function()
+      local notified = {}
+      local orig_notify = vim.notify
+      vim.notify = function(msg, level)
+        table.insert(notified, { msg = msg, level = level })
+      end
+
+      local function feed(text)
+        local r = Repl:new({ cmd = "ghci" })
+        r:attach({
+          read_start = function(_, callback)
+            callback(nil, text)
+          end,
+        }, "stderr")
+        vim.wait(50, function() return false end)
+      end
+
+      feed("<interactive>:28:23: warning: [GHC-63394] [-Wx-partial]\n"
+        .. "    This is a partial function, it throws an error on empty lists.\n")
+      assert.equals(0, #notified)
+
+      feed("<interactive>:27:35: error: [GHC-07626]\n    Parse error in pattern: deltaContext\n")
+      vim.notify = orig_notify
+      assert.equals(1, #notified)
+      assert.equals(vim.log.levels.ERROR, notified[1].level)
+      assert.truthy(notified[1].msg:find("Parse error", 1, true))
+    end)
     it("captures playstate between LOCK_REPL_START and LOCK_REPL_END", function()
       local r = Repl:new({ cmd = "ghci" })
       r.stdin = vim.loop.new_pipe()

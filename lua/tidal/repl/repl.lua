@@ -75,10 +75,12 @@ function Repl:attach(pipe, label)
       end
 
       -- ghci runs headless (pipe mode), so surface errors or a failed
-      -- evaluation is indistinguishable from silence
+      -- evaluation is indistinguishable from silence. Match GHC's error header
+      -- ("<interactive>:12:5: error: …"), not the word "error": warnings such as
+      -- -Wx-partial say "it throws an error on empty lists".
       if label == "stderr" then
         local text = table.concat(complete, "\n")
-        if text:match("error") then
+        if text:match(":%d+:%d+: error") or text:match("^%s*%*%*%* Exception") then
           vim.notify("[tidal] " .. text:sub(1, 800), vim.log.levels.ERROR, { title = "Tidal" })
         end
       end
