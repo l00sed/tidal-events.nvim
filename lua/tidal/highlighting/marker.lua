@@ -44,6 +44,10 @@ function Marker.createMarkers(ranges, lineNumber, eventId)
       local line_text = vim.api.nvim_buf_get_lines(curr_buf, lineNumber - 1, lineNumber, false)[1] or ""
       local line_len = #line_text
       local safe_end_col = math.min(value.range_end, line_len)
+      if value.range_start - 1 > line_len then
+        -- sent text no longer matches the buffer (edited mid-send); skip, don't crash
+        goto continue
+      end
 
       local markerId = vim.api.nvim_buf_set_extmark(curr_buf, Marker.ns, lineNumber - 1, value.range_start - 1, {
         end_row = lineNumber - 1,
@@ -70,6 +74,7 @@ function Marker.createMarkers(ranges, lineNumber, eventId)
         originalText = originalText,
       } -- extmark
     end
+    ::continue::
   end
 end
 

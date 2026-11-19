@@ -19,7 +19,7 @@ function Tokenizer.addDeltaContext(line, eventId)
   local result = line:gsub(lineProcessor.controlPatternsRegex(), function(startPos, content, _)
     local before = line:sub(1, startPos - 1)
 
-    if before:match(lineProcessor.exceptedFunctionPatterns()) then
+    if lineProcessor.isExcepted(before) then
       return '"' .. content .. '"'
     end
 

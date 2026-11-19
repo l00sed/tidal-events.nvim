@@ -129,8 +129,26 @@ function TextProcessor.controlPatternsRegex()
   -- return [["([^"]*)"]] -- matches quoted text
 end
 
+--- Lua patterns for the text before a string literal that must stay a plain
+--- String (not be wrapped in deltaContext). Lua patterns have no `|`, so this is
+--- a list checked one by one.
 function TextProcessor.exceptedFunctionPatterns()
-  return [[numerals%s*=.*$|p%s.*$]]
+  return {
+    "numerals%s*=", -- numerals = "..."
+    "^%s*p%s+$", -- p "name" $ … (named patterns)
+    "%-%-", -- inside a comment
+  }
+end
+
+---@param before string text preceding the string literal on the line
+---@return boolean
+function TextProcessor.isExcepted(before)
+  for _, pattern in ipairs(TextProcessor.exceptedFunctionPatterns()) do
+    if before:match(pattern) then
+      return true
+    end
+  end
+  return false
 end
 
 return TextProcessor

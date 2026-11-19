@@ -287,7 +287,7 @@ describe("Repl", function()
   -- exit -------------------------------------------------------------------
   ---------------------------------------------------------------------------
   describe("exit", function()
-    it("kills and closes the process, deletes buffer, and notifies", function()
+    it("sends SIGTERM without closing the handle, deletes buffer, and notifies", function()
       local notify_stub = stub(vim, "notify")
 
       -- fake proc object with methods
@@ -305,11 +305,11 @@ describe("Repl", function()
 
       r:exit()
 
-      -- assert method calls
-      assert.stub(proc.is_closing).was_called(1)
       -- The first argument is self (the proc table), the second is "sigterm"
       assert.stub(proc.kill).was_called_with(proc, "sigterm")
-      assert.stub(proc.close).was_called_with(proc)
+      -- the spawn exit callback closes the handle; closing it here would drop
+      -- the exit notification (no reap, no on_exit, no SIGKILL escalation)
+      assert.stub(proc.close).was_not_called()
       assert.stub(buf.delete).was_called(1)
       assert.stub(notify_stub).was_called_with("[tidal] ghci stopped")
 

@@ -74,6 +74,15 @@ function Repl:attach(pipe, label)
         complete, buf_acc = lines, remainder
       end
 
+      -- ghci runs headless (pipe mode), so surface errors or a failed
+      -- evaluation is indistinguishable from silence
+      if label == "stderr" then
+        local text = table.concat(complete, "\n")
+        if text:match("error") then
+          vim.notify("[tidal] " .. text:sub(1, 800), vim.log.levels.ERROR, { title = "Tidal" })
+        end
+      end
+
       for _, line in ipairs(complete) do
         if line:sub(-#"_START") == "_START" then
           isLocked = true
@@ -185,8 +194,10 @@ function Repl:send(text, start)
     local rowIndex = 0
     local rowStart = start[1] + 1
 
-    for line in text:gmatch("[^\r\n]+") do
-      local enrichedLine = tokenizer.addMetadata(line, rowStart + rowIndex)
+    -- keep blank lines: they still occupy a buffer row, and skipping them
+    -- shifts every following line's markers onto the wrong row
+    for line in vim.gsplit((text:gsub("\r", ""):gsub("\n$", "")), "\n", { plain = true }) do
+      local enrichedLine = line:match("^%s*$") and line or tokenizer.addMetadata(line, rowStart + rowIndex)
       table.insert(enrichedText, enrichedLine)
       rowIndex = rowIndex + 1
 
