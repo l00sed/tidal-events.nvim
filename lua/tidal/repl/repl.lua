@@ -117,25 +117,42 @@ function Repl:start(opts)
   self.stdin = uv.new_pipe(false)
   self.stdout, self.stderr = uv.new_pipe(false), uv.new_pipe(false)
 
-  self.proc = uv.spawn(
+  local handle
+  handle = uv.spawn(
     self.opts.cmd,
     { args = self.opts.args, stdio = { self.stdin, self.stdout, self.stderr } },
     function(code, signal)
-      for _, p in ipairs({ self.stdin, self.stdout, self.stderr }) do
+      for _, p in ipairs({ self.stdin, self.stdout, self.stderr, handle }) do
         if p and not p:is_closing() then
           p:close()
         end
       end
-      self.proc = nil
+      if self.proc == handle then
+        self.proc = nil
+      end
       vim.schedule(function()
         vim.notify(("[tidal] ghci exited (code=%d, signal=%d)"):format(code, signal), vim.log.levels.WARN)
+        if self.opts.on_exit then
+          self.opts.on_exit(code, signal)
+        end
       end)
     end
   )
+  self.proc = handle
 
   if not self.proc then
     return vim.notify("[tidal] failed to spawn " .. self.opts.cmd, vim.log.levels.ERROR)
   end
+
+  -- Tidal's ghci does NOT exit on stdin EOF (Ableton Link threads keep the RTS alive),
+  -- so quitting Neovim without :TidalQuit used to orphan it — still playing, still holding
+  -- port 6010. Kill it synchronously on the way out.
+  api.nvim_create_autocmd("VimLeavePre", {
+    group = api.nvim_create_augroup("TidalReplCleanup", { clear = true }),
+    callback = function()
+      self:kill(true)
+    end,
+  })
 
   vim.notify("[tidal] " .. self.opts.cmd .. " started (pipe mode)", vim.log.levels.INFO)
 
@@ -242,6 +259,39 @@ function Repl:connect_remote(remote)
   return self
 end
 
+--- SIGTERM the process, escalating to SIGKILL if it's still alive after 1 s.
+--- The handle is closed by the spawn exit callback, not here: closing it early
+--- drops the exit notification (no reap, no on_exit, no escalation possible).
+--- @param sync boolean block until the process is gone (for VimLeavePre)
+function Repl:kill(sync)
+  local proc = self.proc
+  if not proc or proc:is_closing() then
+    return
+  end
+  proc:kill("sigterm")
+
+  local function gone()
+    return self.proc ~= proc or proc:is_closing()
+  end
+
+  if sync then
+    vim.wait(1000, gone, 20)
+    if not gone() then
+      proc:kill("sigkill")
+      vim.wait(500, gone, 20)
+    end
+    return
+  end
+
+  local timer = uv.new_timer()
+  timer:start(1000, 0, function()
+    timer:close()
+    if not gone() then
+      proc:kill("sigkill")
+    end
+  end)
+end
+
 --- Close the REPL
 --- @return self for method chaining
 function Repl:exit()
@@ -250,8 +300,7 @@ function Repl:exit()
   end
 
   if self.proc and not self.proc:is_closing() then
-    self.proc:kill("sigterm") -- or "sigkill"
-    self.proc:close()
+    self:kill(false)
     vim.notify(string.format("[tidal] %s stopped", self.opts.cmd))
   elseif self.stdin and not self.stdin:is_closing() then
     -- in spawn mode self.stdin gets closed by start()'s on_exit
